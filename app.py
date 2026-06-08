@@ -104,10 +104,20 @@ def save_to_github(df, sha, message="Update Database"):
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
         content = output.getvalue()
-        if not sha: sha = repo.get_contents(FILE_PATH).sha
-        repo.update_file(FILE_PATH, message, content, sha)
+        
+        # FIX: Agar sha nahi mila toh repo se direct fresh nikalne ki koshish karein, nahi toh naye sire se create karein
+        if not sha:
+            try:
+                sha = repo.get_contents(FILE_PATH).sha
+                repo.update_file(FILE_PATH, message, content, sha)
+            except:
+                repo.create_file(FILE_PATH, "Initial DB Creation", content, branch="main")
+        else:
+            repo.update_file(FILE_PATH, message, content, sha)
+            
         st.cache_data.clear()
         st.session_state.last_save_time = datetime.now()
+        st.session_state.lock_until = None # Lock clear karein
         return True
     except:
         st.session_state.lock_until = datetime.now() + timedelta(minutes=2)
@@ -263,7 +273,6 @@ if full_ro:
                 
             val = input_dates.get(key)
             
-            # CRITICAL LOGIC FIX: Agar loop ka field current stage se chota hai, tabhi zikr karein. Current aur aage ke fields pure hide ho jayenge.
             if i < stage_idx or status == "WCA - Waiting for Approval":
                 if val:
                     t_parts.append(f"{short}: {val.day}/{val.month}")
@@ -271,8 +280,6 @@ if full_ro:
                     t_parts.append(f"{short}:  ")
         
         timeline_str = " ,".join(t_parts)
-        
-        # Ek separator maintain karne ke liye agar timeline khali nahi hai
         timeline_prefix = f" - {timeline_str}" if timeline_str else ""
         
         if cash_check:
