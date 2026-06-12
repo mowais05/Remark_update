@@ -291,7 +291,18 @@ if full_ro:
         else:
             final_remark = f"{day_month} - {cat}{timeline_prefix} - {pos}"
     
-    st.info("📋 Final Remark Preview:")
+    # SMART UPDATE: DMS 100 Character Limit Protection
+    if len(final_remark) > 100:
+        # Step 1: Extra formatting spaces ko squeeze karein (` - ` -> `-`)
+        final_remark = final_remark.replace(" - ", "-").replace(" ,", ",").replace(", ", ",").replace(": ", ":")
+        # Step 2: Agar ab bhi 100 characters se bada hai, toh bache huye single spaces bhi trim karein
+        if len(final_remark) > 100:
+            final_remark = final_remark.replace(" ", "")
+        # Step 3: Hard limit safety fallback taaki DMS kabhi reject na kare
+        if len(final_remark) > 100:
+            final_remark = final_remark[:100]
+
+    st.info(f"📋 Final Remark Preview (Length: {len(final_remark)}/100):")
     st.code(final_remark)
 
 # --- SAVE BUTTON ---
