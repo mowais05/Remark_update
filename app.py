@@ -31,7 +31,7 @@ def get_wait_time():
     if st.session_state.lock_until and datetime.now() < st.session_state.lock_until:
         return int((st.session_state.lock_until - datetime.now()).total_seconds())
     elapsed = (datetime.now() - st.session_state.last_save_time).total_seconds()
-    limit = 10
+    limit = 2  # SMART UPDATE: 10s se kam karke 2s kiya (Sirf accidental double-click rokne ke liye)
     return int(limit - elapsed) if elapsed < limit else 0
 
 # --- CUSTOM CSS ---
@@ -60,11 +60,11 @@ def load_data_from_github():
         df.columns = df.columns.str.strip()
         if 'RO_No' in df.columns:
             df['RO_No'] = df['RO_No'].astype(str).str.strip().str.upper()
-        return df, file_content.sha
+        return df
     except:
         cols = ["RO_No", "In_Date", "Int_Date", "Sur_Date", "App_Date", "Dis_Date", 
                 "Den_Date", "Pnt_Date", "Fit_Date", "RBND_Date", "Smart_Status", "Final_Remark"]
-        return pd.DataFrame(columns=cols), None
+        return pd.DataFrame(columns=cols)
 
 # --- MOVE TO ARCHIVE ON GITHUB ---
 def move_to_delivered_github(row_data):
@@ -97,21 +97,24 @@ def move_to_delivered_github(row_data):
     except:
         return False
 
-def save_to_github(df, sha, message="Update Database"):
+# SMART UPDATE: Is function me ab SHA pass karne ki zaroorat nahi hai, ye khud GitHub se latest nikalega
+def save_to_github(df, message="Update Database"):
     try:
         repo = get_github_repo()
+        
+        # Hamesha write karne se thik pehle fresh SHA fetch karo taaki ban ya conflict na ho
+        try:
+            sha = repo.get_contents(FILE_PATH, ref="main").sha
+        except:
+            sha = None
+            
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
         content = output.getvalue()
         
-        # FIX: Agar sha nahi mila toh repo se direct fresh nikalne ki koshish karein, nahi toh naye sire se create karein
         if not sha:
-            try:
-                sha = repo.get_contents(FILE_PATH).sha
-                repo.update_file(FILE_PATH, message, content, sha)
-            except:
-                repo.create_file(FILE_PATH, "Initial DB Creation", content, branch="main")
+            repo.create_file(FILE_PATH, "Initial DB Creation", content, branch="main")
         else:
             repo.update_file(FILE_PATH, message, content, sha)
             
@@ -133,7 +136,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- MAIN APP ---
-df, file_sha = load_data_from_github()
+df = load_data_from_github()
 
 # --- SIDEBAR & OPTIONS ---
 st.sidebar.header("RO Search")
@@ -154,7 +157,7 @@ if full_ro and not df.empty:
             with st.sidebar.spinner("Moving to delivered database..."):
                 if move_to_delivered_github(existing_data):
                     new_df = df[df['RO_No'] != full_ro]
-                    if save_to_github(new_df, file_sha, f"Archived {full_ro}"):
+                    if save_to_github(new_df, f"Archived {full_ro}"):
                         st.sidebar.success("RO Sent to Delivery!"); time.sleep(1); st.rerun()
                 else:
                     st.sidebar.error("❌ Archive failed! Main database safe.")
@@ -163,7 +166,7 @@ if full_ro and not df.empty:
         if st.sidebar.button("❌ PERMANENT DELETE (NO ARCHIVE)"):
             with st.sidebar.spinner("Deleting permanently..."):
                 new_df = df[df['RO_No'] != full_ro]
-                if save_to_github(new_df, file_sha, f"Permanently Deleted {full_ro}"):
+                if save_to_github(new_df, f"Permanently Deleted {full_ro}"):
                     st.sidebar.error("RO Deleted Permanently!"); time.sleep(1); st.rerun()
     else:
         st.sidebar.info(f"🆕 New Entry: {full_ro}")
@@ -307,7 +310,7 @@ if st.button(btn_label, disabled=(wait > 0)):
         temp_df = pd.concat([temp_df, pd.DataFrame([new_row])], ignore_index=True)
         
         with st.spinner("💾 Saving..."):
-            if save_to_github(temp_df, file_sha):
+            if save_to_github(temp_df):
                 st.success("✅ Saved!"); time.sleep(1); st.rerun()
 
 if wait > 0:
