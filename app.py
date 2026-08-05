@@ -11,14 +11,14 @@ APP_PASSWORD = "vddf2jjwm3"
 try:
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
     REPO_NAME = "mowais05/Remark_update" 
-except:
+except Exception:
     st.error("❌ Secrets not found! Please add GITHUB_TOKEN in Streamlit Settings.")
     st.stop()
 
 FILE_PATH = "database.xlsx"
 DELIVERED_FILE_PATH = "delivered_database.xlsx"  # Delivered Database File Path
 
-# Page Config - Removed force layout="wide" to avoid horizontal stretching on tiny mobile screens
+# Page Config
 st.set_page_config(page_title="DYNAMO SMART PORTAL", initial_sidebar_state="expanded")
 
 # --- COOLDOWN LOGIC ---
@@ -31,7 +31,7 @@ def get_wait_time():
     if st.session_state.lock_until and datetime.now() < st.session_state.lock_until:
         return int((st.session_state.lock_until - datetime.now()).total_seconds())
     elapsed = (datetime.now() - st.session_state.last_save_time).total_seconds()
-    limit = 2  # SMART UPDATE: 10s se kam karke 2s kiya (Sirf accidental double-click rokne ke liye)
+    limit = 2  # Smart Cooldown Limiter
     return int(limit - elapsed) if elapsed < limit else 0
 
 # --- CUSTOM CSS ---
@@ -49,32 +49,39 @@ def get_github_repo():
     try:
         g = Github(GITHUB_TOKEN)
         return g.get_repo(REPO_NAME)
-    except: return None
+    except Exception as e:
+        st.error(f"GitHub Connection Error: {e}")
+        return None
 
 @st.cache_data(ttl=600)
 def load_data_from_github():
+    cols = ["RO_No", "In_Date", "Int_Date", "Sur_Date", "App_Date", "Dis_Date", 
+            "Den_Date", "Pnt_Date", "Fit_Date", "RBND_Date", "Smart_Status", "Final_Remark"]
     try:
         repo = get_github_repo()
+        if not repo:
+            return pd.DataFrame(columns=cols)
         file_content = repo.get_contents(FILE_PATH, ref="main")
         df = pd.read_excel(io.BytesIO(file_content.decoded_content))
         df.columns = df.columns.str.strip()
         if 'RO_No' in df.columns:
             df['RO_No'] = df['RO_No'].astype(str).str.strip().str.upper()
         return df
-    except:
-        cols = ["RO_No", "In_Date", "Int_Date", "Sur_Date", "App_Date", "Dis_Date", 
-                "Den_Date", "Pnt_Date", "Fit_Date", "RBND_Date", "Smart_Status", "Final_Remark"]
+    except Exception:
         return pd.DataFrame(columns=cols)
 
 # --- MOVE TO ARCHIVE ON GITHUB ---
 def move_to_delivered_github(row_data):
     try:
         repo = get_github_repo()
+        if not repo:
+            return False
+            
         try:
             file_content = repo.get_contents(DELIVERED_FILE_PATH, ref="main")
             delivered_df = pd.read_excel(io.BytesIO(file_content.decoded_content))
             sha = file_content.sha
-        except:
+        except Exception:
             cols = ["RO_No", "In_Date", "Int_Date", "Sur_Date", "App_Date", "Dis_Date", 
                     "Den_Date", "Pnt_Date", "Fit_Date", "RBND_Date", "Smart_Status", "Final_Remark", "Delivered_At"]
             delivered_df = pd.DataFrame(columns=cols)
@@ -94,18 +101,18 @@ def move_to_delivered_github(row_data):
         else:
             repo.create_file(DELIVERED_FILE_PATH, "Initial Delivered DB Creation", content, branch="main")
         return True
-    except:
+    except Exception:
         return False
 
-# SMART UPDATE: Is function me ab SHA pass karne ki zaroorat nahi hai, ye khud GitHub se latest nikalega
 def save_to_github(df, message="Update Database"):
     try:
         repo = get_github_repo()
+        if not repo:
+            return False
         
-        # Hamesha write karne se thik pehle fresh SHA fetch karo taaki ban ya conflict na ho
         try:
             sha = repo.get_contents(FILE_PATH, ref="main").sha
-        except:
+        except Exception:
             sha = None
             
         output = io.BytesIO()
@@ -120,19 +127,25 @@ def save_to_github(df, message="Update Database"):
             
         st.cache_data.clear()
         st.session_state.last_save_time = datetime.now()
-        st.session_state.lock_until = None # Lock clear karein
+        st.session_state.lock_until = None
         return True
-    except:
+    except Exception:
         st.session_state.lock_until = datetime.now() + timedelta(minutes=2)
         return False
 
 # --- AUTH ---
-if "authenticated" not in st.session_state: st.session_state.authenticated = False
+if "authenticated" not in st.session_state: 
+    st.session_state.authenticated = False
+
 if not st.session_state.authenticated:
     st.title("🛡️ Secure Access")
     pwd = st.text_input("Enter Password", type="password")
     if st.button("Unlock System"):
-        if pwd == APP_PASSWORD: st.session_state.authenticated = True; st.rerun()
+        if pwd == APP_PASSWORD: 
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("❌ Incorrect Password")
     st.stop()
 
 # --- MAIN APP ---
@@ -152,39 +165,42 @@ if full_ro and not df.empty:
         st.sidebar.divider()
         
         st.sidebar.subheader("Action Center")
-        # OPTION 1: MOVE TO DELIVERY
         if st.sidebar.button("🚚 MOVE TO DELIVERY EXCEL"):
             with st.sidebar.spinner("Moving to delivered database..."):
                 if move_to_delivered_github(existing_data):
                     new_df = df[df['RO_No'] != full_ro]
                     if save_to_github(new_df, f"Archived {full_ro}"):
-                        st.sidebar.success("RO Sent to Delivery!"); time.sleep(1); st.rerun()
+                        st.sidebar.success("RO Sent to Delivery!")
+                        time.sleep(1)
+                        st.rerun()
                 else:
                     st.sidebar.error("❌ Archive failed! Main database safe.")
         
-        # OPTION 2: PERMANENT DELETE
         if st.sidebar.button("❌ PERMANENT DELETE (NO ARCHIVE)"):
             with st.sidebar.spinner("Deleting permanently..."):
                 new_df = df[df['RO_No'] != full_ro]
                 if save_to_github(new_df, f"Permanently Deleted {full_ro}"):
-                    st.sidebar.error("RO Deleted Permanently!"); time.sleep(1); st.rerun()
+                    st.sidebar.error("RO Deleted Permanently!")
+                    time.sleep(1)
+                    st.rerun()
     else:
         st.sidebar.info(f"🆕 New Entry: {full_ro}")
 
 st.sidebar.divider()
 
-# 1. Main Database Download Button
+# Download Buttons
 towais = io.BytesIO()
-with pd.ExcelWriter(towais, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+with pd.ExcelWriter(towais, engine='openpyxl') as writer: 
+    df.to_excel(writer, index=False)
 st.sidebar.download_button("📊 Download Main Excel", towais.getvalue(), f"Database_{datetime.now().strftime('%d_%m')}.xlsx")
 
-# 2. DELIVERED DATABASE DOWNLOAD BUTTON
 try:
     repo = get_github_repo()
-    delivered_file = repo.get_contents(DELIVERED_FILE_PATH, ref="main")
-    delivered_data = delivered_file.decoded_content
-    st.sidebar.download_button("📦 Download Delivered Excel", delivered_data, f"Delivered_Database_{datetime.now().strftime('%d_%m')}.xlsx")
-except:
+    if repo:
+        delivered_file = repo.get_contents(DELIVERED_FILE_PATH, ref="main")
+        delivered_data = delivered_file.decoded_content
+        st.sidebar.download_button("📦 Download Delivered Excel", delivered_data, f"Delivered_Database_{datetime.now().strftime('%d_%m')}.xlsx")
+except Exception:
     st.sidebar.info("ℹ️ Delivered DB empty ya abhi tak bani nahi hai.")
 
 # --- CASH WORK STATUS DETECTION ---
@@ -193,7 +209,7 @@ if existing_data is not None:
     if str(existing_data.get('Smart_Status', "")) == "CASH" or "(cashwork)" in str(existing_data.get('Final_Remark', "")).lower():
         is_cash_saved = True
 
-# --- REPAIR TIMELINE (SMART HYBRID INPUT) ---
+# --- REPAIR TIMELINE ---
 st.subheader("📅 Repair Timeline")
 
 fields = [
@@ -202,7 +218,6 @@ fields = [
     ("Pnt_Date", "Pnt"), ("Fit_Date", "Fit"), ("RBND_Date", "RDY")
 ]
 
-# Checkboxes at Top Level UI
 cols_top = st.columns(2)
 with cols_top[0]:
     pna_check = st.checkbox("🚨 MARK AS PNA", value=False if existing_data is None else (str(existing_data.get('Smart_Status', "")) == "PNA"), key=f"pna_{full_ro}")
@@ -213,7 +228,6 @@ cols = st.columns(5)
 input_dates = {}
 
 for i, (key, short) in enumerate(fields):
-    # CASH WORK me Int, Sur, aur App Dates hide rahengi
     if cash_check and key in ["Int_Date", "Sur_Date", "App_Date"]:
         input_dates[key] = None
         continue
@@ -224,9 +238,11 @@ for i, (key, short) in enumerate(fields):
         
         if existing_data is not None:
             val = existing_data.get(key)
-            if pd.notnull(val) and str(val).strip() not in ["", "nat", "None", "NaN"]:
-                try: default_val = pd.to_datetime(val).date()
-                except: pass
+            if pd.notnull(val) and str(val).strip().lower() not in ["", "nat", "none", "nan"]:
+                try: 
+                    default_val = pd.to_datetime(val).date()
+                except Exception: 
+                    pass
         
         d_input = st.date_input(short, value=default_val, format="DD/MM/YYYY", key=d_key)
         input_dates[key] = d_input
@@ -291,14 +307,10 @@ if full_ro:
         else:
             final_remark = f"{day_month} - {cat}{timeline_prefix} - {pos}"
     
-    # SMART UPDATE: DMS 100 Character Limit Protection
     if len(final_remark) > 100:
-        # Step 1: Extra formatting spaces ko squeeze karein (` - ` -> `-`)
         final_remark = final_remark.replace(" - ", "-").replace(" ,", ",").replace(", ", ",").replace(": ", ":")
-        # Step 2: Agar ab bhi 100 characters se bada hai, toh bache huye single spaces bhi trim karein
         if len(final_remark) > 100:
             final_remark = final_remark.replace(" ", "")
-        # Step 3: Hard limit safety fallback taaki DMS kabhi reject na kare
         if len(final_remark) > 100:
             final_remark = final_remark[:100]
 
@@ -322,7 +334,12 @@ if st.button(btn_label, disabled=(wait > 0)):
         
         with st.spinner("💾 Saving..."):
             if save_to_github(temp_df):
-                st.success("✅ Saved!"); time.sleep(1); st.rerun()
+                st.success("✅ Saved!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("❌ Save failed! GitHub API rate limit ya error check karein.")
 
 if wait > 0:
-    time.sleep(1); st.rerun()
+    time.sleep(1)
+    st.rerun()
