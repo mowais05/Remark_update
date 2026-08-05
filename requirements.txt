@@ -2,4 +2,3 @@ streamlit
 pandas
 openpyxl
 PyGithub
-starlette<0.36.0
