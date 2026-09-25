@@ -4,16 +4,14 @@ from datetime import datetime, timedelta
 from github import Github
 import io
 import time
+import streamlit.components.v1 as components
 
 # --- CONFIGURATION (SECURE) ---
 APP_PASSWORD = "vddf2jjwm3"
 
-try:
-    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-    REPO_NAME = "mowais05/Remark_update" 
-except Exception:
-    st.error("❌ Secrets not found! Please add GITHUB_TOKEN in Streamlit Settings.")
-    st.stop()
+# Direct Token Set for Local Testing
+GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+REPO_NAME = "mowais05/Remark_update" 
 
 FILE_PATH = "database.xlsx"
 DELIVERED_FILE_PATH = "delivered_database.xlsx"  # Delivered Database File Path
@@ -36,11 +34,7 @@ def get_wait_time():
 
 # --- CUSTOM CSS ---
 st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
-    .stButton>button:disabled { background-color: #e9ecef !important; color: #adb5bd !important; border: 1px solid #dee2e6 !important; }
-    </style>
+    
     """, unsafe_allow_html=True)
 
 # --- GITHUB CORE ---
@@ -70,7 +64,7 @@ def load_data_from_github():
     except Exception:
         return pd.DataFrame(columns=cols)
 
-# --- MOVE TO ARCHIVE ON GITHUB ---
+# --- MOVE SINGLE RO TO ARCHIVE ON GITHUB ---
 def move_to_delivered_github(row_data):
     try:
         repo = get_github_repo()
@@ -103,6 +97,69 @@ def move_to_delivered_github(row_data):
         return True
     except Exception:
         return False
+
+# --- 🚀 NEW FEATURE: BULK MOVE TO DELIVERED WITH 1-100% PROGRESS BAR ---
+def bulk_move_to_delivered_github(ro_list_to_move, current_df):
+    try:
+        repo = get_github_repo()
+        if not repo:
+            return False, "GitHub Connection Failed"
+            
+        # Get Delivered DB
+        try:
+            file_content = repo.get_contents(DELIVERED_FILE_PATH, ref="main")
+            delivered_df = pd.read_excel(io.BytesIO(file_content.decoded_content))
+            delivered_sha = file_content.sha
+        except Exception:
+            cols = ["RO_No", "In_Date", "Int_Date", "Sur_Date", "App_Date", "Dis_Date", 
+                    "Den_Date", "Pnt_Date", "Fit_Date", "RBND_Date", "Smart_Status", "Final_Remark", "Delivered_At"]
+            delivered_df = pd.DataFrame(columns=cols)
+            delivered_sha = None
+
+        matching_rows = current_df[current_df['RO_No'].isin(ro_list_to_move)].copy()
+        if matching_rows.empty:
+            return False, "Uploaded Excel ka koi bhi RO main database me nahi mila!"
+
+        total_items = len(matching_rows)
+        progress_bar = st.sidebar.progress(0)
+        status_text = st.sidebar.empty()
+
+        new_delivered_rows = []
+        now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+        # Step-by-step progress tracking
+        for idx, (_, row) in enumerate(matching_rows.iterrows()):
+            row_dict = row.to_dict()
+            row_dict["Delivered_At"] = now_str
+            new_delivered_rows.append(row_dict)
+            
+            # Progress update (1% to 100%)
+            prog = int(((idx + 1) / total_items) * 100)
+            progress_bar.progress(prog)
+            status_text.text(f"Processing: {idx+1}/{total_items} ({prog}%)")
+            time.sleep(0.02)  # Smooth UI feedback
+
+        # Combine into Delivered DF
+        delivered_df = pd.concat([delivered_df, pd.DataFrame(new_delivered_rows)], ignore_index=True)
+
+        # Save Delivered DB to GitHub (Single Batch Request)
+        out_del = io.BytesIO()
+        with pd.ExcelWriter(out_del, engine='openpyxl') as writer:
+            delivered_df.to_excel(writer, index=False)
+        
+        if delivered_sha:
+            repo.update_file(DELIVERED_FILE_PATH, f"Bulk Archived {total_items} ROs", out_del.getvalue(), delivered_sha)
+        else:
+            repo.create_file(DELIVERED_FILE_PATH, "Initial Delivered DB Creation", out_del.getvalue(), branch="main")
+
+        # Update Main DB (Remove delivered ROs)
+        updated_main_df = current_df[~current_df['RO_No'].isin(ro_list_to_move)]
+        save_to_github(updated_main_df, f"Bulk Delivered {total_items} ROs")
+
+        status_text.success(f"✅ Successfully Moved {total_items} ROs!")
+        return True, f"{total_items} ROs Moved successfully!"
+    except Exception as e:
+        return False, str(e)
 
 def save_to_github(df, message="Update Database"):
     try:
@@ -151,40 +208,86 @@ if not st.session_state.authenticated:
 # --- MAIN APP ---
 df = load_data_from_github()
 
-# --- SIDEBAR & OPTIONS ---
-st.sidebar.header("RO Search")
-ro_input = st.sidebar.text_input("Enter RO Number", key="search_input").strip()
-full_ro = ro_input.upper() 
+# --- 🚀 RO INPUT & NOTIFICATION ON MAIN PAGE ---
+st.header("🔍 RO Data Entry")
+ro_input = st.text_input("Enter RO Number", key="search_input").strip()
+full_ro = ro_input.upper()
 
+# Main Screen Notification
 existing_data = None
 if full_ro and not df.empty:
     res = df[df['RO_No'] == full_ro]
     if not res.empty:
         existing_data = res.iloc[0]
-        st.sidebar.success(f"✅ Loaded: {full_ro}")
-        st.sidebar.divider()
-        
-        st.sidebar.subheader("Action Center")
-        if st.sidebar.button("🚚 MOVE TO DELIVERY EXCEL"):
-            with st.sidebar.spinner("Moving to delivered database..."):
-                if move_to_delivered_github(existing_data):
-                    new_df = df[df['RO_No'] != full_ro]
-                    if save_to_github(new_df, f"Archived {full_ro}"):
-                        st.sidebar.success("RO Sent to Delivery!")
-                        time.sleep(1)
-                        st.rerun()
-                else:
-                    st.sidebar.error("❌ Archive failed! Main database safe.")
-        
-        if st.sidebar.button("❌ PERMANENT DELETE (NO ARCHIVE)"):
-            with st.sidebar.spinner("Deleting permanently..."):
+        st.success(f"✅ Loaded: {full_ro}")
+    else:
+        st.info(f"🆕 New Entry: {full_ro}")
+
+# --- STRICT DATE PICKER KEYBOARD POPUP BLOCKER ---
+components.html(
+    """
+    
+    """,
+    height=0,
+    width=0
+)
+
+# --- SIDEBAR & OPTIONS ---
+st.sidebar.header("Data Actions")
+
+if existing_data is not None:
+    st.sidebar.subheader("Action Center")
+    if st.sidebar.button("🚚 MOVE TO DELIVERY EXCEL"):
+        with st.sidebar.spinner("Moving to delivered database..."):
+            if move_to_delivered_github(existing_data):
                 new_df = df[df['RO_No'] != full_ro]
-                if save_to_github(new_df, f"Permanently Deleted {full_ro}"):
-                    st.sidebar.error("RO Deleted Permanently!")
+                if save_to_github(new_df, f"Archived {full_ro}"):
+                    st.sidebar.success("RO Sent to Delivery!")
                     time.sleep(1)
                     st.rerun()
-    else:
-        st.sidebar.info(f"🆕 New Entry: {full_ro}")
+            else:
+                st.sidebar.error("❌ Archive failed! Main database safe.")
+    
+    if st.sidebar.button("❌ PERMANENT DELETE (NO ARCHIVE)"):
+        with st.sidebar.spinner("Deleting permanently..."):
+            new_df = df[df['RO_No'] != full_ro]
+            if save_to_github(new_df, f"Permanently Deleted {full_ro}"):
+                st.sidebar.error("RO Deleted Permanently!")
+                time.sleep(1)
+                st.rerun()
+
+st.sidebar.divider()
+
+# --- 🚀 NEW FEATURE: BULK DELIVERY EXCEL UPLOAD ---
+st.sidebar.subheader("📦 Bulk Delivery Upload")
+bulk_file = st.sidebar.file_uploader("Upload Excel with ROs", type=["xlsx", "xls"], key="bulk_ro_uploader")
+
+if bulk_file is not None:
+    if st.sidebar.button("🚀 PROCESS BULK DELIVERY"):
+        try:
+            bulk_df = pd.read_excel(bulk_file)
+            ro_col = None
+            for c in bulk_df.columns:
+                if "RO" in str(c).upper():
+                    ro_col = c
+                    break
+            if ro_col is None:
+                ro_col = bulk_df.columns[0]
+            
+            upload_ros = bulk_df[ro_col].astype(str).str.strip().str.upper().tolist()
+            upload_ros = [r for r in upload_ros if r and r.lower() not in ["nan", "none", "nat"]]
+
+            if not upload_ros:
+                st.sidebar.error("❌ File me koi valid RO Number nahi mila!")
+            else:
+                success, msg = bulk_move_to_delivered_github(upload_ros, df)
+                if success:
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.sidebar.error(f"❌ Error: {msg}")
+        except Exception as e:
+            st.sidebar.error(f"❌ File read error: {e}")
 
 st.sidebar.divider()
 
@@ -224,28 +327,31 @@ with cols_top[0]:
 with cols_top[1]:
     cash_check = st.checkbox("💰 CASH WORK (No Insurance)", value=is_cash_saved, disabled=pna_check, key=f"cash_{full_ro}")
 
-cols = st.columns(5)
 input_dates = {}
 
-for i, (key, short) in enumerate(fields):
-    if cash_check and key in ["Int_Date", "Sur_Date", "App_Date"]:
-        input_dates[key] = None
-        continue
-        
-    with cols[i % 5]:
-        d_key = f"date_{key}_{full_ro}"
-        default_val = None
-        
-        if existing_data is not None:
-            val = existing_data.get(key)
-            if pd.notnull(val) and str(val).strip().lower() not in ["", "nat", "none", "nan"]:
-                try: 
-                    default_val = pd.to_datetime(val).date()
-                except Exception: 
-                    pass
-        
-        d_input = st.date_input(short, value=default_val, format="DD/MM/YYYY", key=d_key)
-        input_dates[key] = d_input
+# Row-by-Row rendering (3 fields per row) to ensure strict chronological order on mobile screens
+for row_idx in range(0, len(fields), 3):
+    row_fields = fields[row_idx:row_idx + 3]
+    cols = st.columns(len(row_fields))
+    for col_idx, (key, short) in enumerate(row_fields):
+        if cash_check and key in ["Int_Date", "Sur_Date", "App_Date"]:
+            input_dates[key] = None
+            continue
+            
+        with cols[col_idx]:
+            d_key = f"date_{key}_{full_ro}"
+            default_val = None
+            
+            if existing_data is not None:
+                val = existing_data.get(key)
+                if pd.notnull(val) and str(val).strip().lower() not in ["", "nat", "none", "nan"]:
+                    try: 
+                        default_val = pd.to_datetime(val).date()
+                    except Exception: 
+                        pass
+            
+            d_input = st.date_input(short, value=default_val, format="DD/MM/YYYY", key=d_key)
+            input_dates[key] = d_input
 
 st.divider()
 
@@ -279,7 +385,8 @@ final_remark = ""
 if full_ro:
     day_month = f"{datetime.now().day}/{datetime.now().month}"
     if pna_check:
-        final_remark, status = f"{day_month} - PNA", "PNA"
+        # 🚀 UPDATED PNA REMARK FORMAT
+        final_remark, status = f"{day_month} - PNA - Part not available", "PNA"
     else:
         cat = status.split(" - ")[0]
         pos = extra_note if extra_note.strip() != "" else status.split(" - ")[1]
